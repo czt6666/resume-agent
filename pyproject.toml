@@ -1,0 +1,26 @@
+[project]
+name = "resume-agent"
+version = "0.1.0"
+description = "简历优化 Agent（LangChain 1.x）"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.0.0",
+    "langchain-core>=1.0.0",
+    "langchain-openai>=0.3.0",
+    "langchain-community>=0.3.0",
+    "langgraph>=0.2.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+    "duckduckgo-search>=6.0.0",
+    "pypdf>=5.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/resume_agent"]
+
+[project.scripts]
+resume-agent = "resume_agent.cli:main"
