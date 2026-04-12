@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import re
+import time
 from typing import Any
 
 import httpx
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from resume_agent.schemas import GithubFitEvaluation
 
 GITHUB_API = "https://api.github.com"
 
@@ -17,36 +23,45 @@ def _bmp_text(s: str, max_len: int | None = None) -> str:
     return t.strip()
 
 
-def search_github_repositories(query: str, max_results: int = 5) -> str:
-    """在 GitHub 上按关键词搜索公开仓库（按 star 排序），用于为用户推荐可写进简历的项目。
-
-    参数:
-        query: 搜索词，可含语言等，如 \"language:Python web scraper\"。
-        max_results: 返回条数，默认 5，最大建议 10。
-
-    返回:
-        仓库列表的简要说明（名称、URL、简介、star 数、主要语言）。
-    """
-    max_results = max(1, min(int(max_results), 10))
-    params = {"q": query, "sort": "stars", "order": "desc", "per_page": str(max_results)}
-    headers = {
+def _github_headers() -> dict[str, str]:
+    h = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "resume-agent/0.1 (resume optimization helper)",
     }
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
+
+
+def _github_search_items(
+    query: str,
+    *,
+    sort: str = "stars",
+    order: str = "desc",
+    per_page: int = 10,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """返回 (items, error_message)。error 时 items 为 None。"""
+    per_page = max(1, min(int(per_page), 10))
+    params = {"q": query, "sort": sort, "order": order, "per_page": str(per_page)}
     try:
         with httpx.Client(timeout=20.0) as client:
-            r = client.get(f"{GITHUB_API}/search/repositories", params=params, headers=headers)
+            r = client.get(
+                f"{GITHUB_API}/search/repositories",
+                params=params,
+                headers=_github_headers(),
+            )
             r.raise_for_status()
             data = r.json()
     except Exception as e:  # noqa: BLE001
-        return f"GitHub 搜索失败: {e}"
+        return None, str(e)
 
-    items: list[dict[str, Any]] = data.get("items") or []
-    if not items:
-        return "未找到匹配的仓库，可换一个更具体的关键词（技术栈 + 场景，如 fastapi blog）。"
+    return list(data.get("items") or []), None
 
+
+def _format_github_items(items: list[dict[str, Any]], start_index: int = 1) -> str:
     lines: list[str] = []
-    for i, repo in enumerate(items, 1):
+    for i, repo in enumerate(items, start_index):
         name = repo.get("full_name", "")
         desc = _bmp_text((repo.get("description") or "").replace("\n", " "), 500)
         stars = repo.get("stargazers_count", 0)
@@ -58,6 +73,213 @@ def search_github_repositories(query: str, max_results: int = 5) -> str:
             + (f"\n   topics: {topics}" if topics else "")
         )
     return "\n\n".join(lines)
+
+
+def search_github_repositories(
+    query: str,
+    max_results: int = 5,
+    language: str = "",
+    min_stars: int | None = None,
+    max_stars: int | None = None,
+) -> str:
+    """在 GitHub 上按关键词搜索公开仓库（按 star 排序），用于为用户推荐可写进简历的项目。
+
+    参数:
+        query: 核心搜索词，勿重复写入 language/stars（会用参数拼接），如 \"web scraper api\"。
+        max_results: 返回条数，默认 5，最大 10。
+        language: 可选，如 Python、Go、TypeScript（写入 GitHub 的 language: 限定）。
+        min_stars / max_stars: 可选，控制体量，避免过小玩具库或过大工业怪物项目。
+
+    返回:
+        仓库列表的简要说明（名称、URL、简介、star 数、主要语言）。
+    """
+    max_results = max(1, min(int(max_results), 10))
+    q = query.strip()
+    if language.strip():
+        q = f"{q} language:{language.strip()}"
+    if min_stars is not None and max_stars is not None:
+        lo, hi = int(min_stars), int(max_stars)
+        if lo > hi:
+            lo, hi = hi, lo
+        q = f"{q} stars:{lo}..{hi}"
+    elif min_stars is not None:
+        q = f"{q} stars:>={int(min_stars)}"
+    elif max_stars is not None:
+        q = f"{q} stars:<={int(max_stars)}"
+    q = f"{q} archived:false"
+
+    items, err = _github_search_items(q, sort="stars", order="desc", per_page=max_results)
+    if err:
+        return f"GitHub 搜索失败: {err}"
+    if not items:
+        return "未找到匹配的仓库，可换一个更具体的关键词（技术栈 + 场景，如 fastapi blog）。"
+    return _format_github_items(items)
+
+
+def _strip_noise_terms(text: str) -> str:
+    noise = r"(教程|入门|awesome|合集|列表|list|101|零基础)"
+    t = re.sub(noise, " ", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _short_core_keywords(text: str, max_tokens: int = 4) -> str:
+    parts = [p for p in re.split(r"[\s,，、]+", text.strip()) if p]
+    if len(parts) <= max_tokens:
+        return " ".join(parts)
+    return " ".join(parts[:max_tokens])
+
+
+def search_github_fuzzy_for_resume(
+    keywords: str,
+    language: str = "",
+    min_stars: int = 50,
+    max_stars: int = 12000,
+    per_variant: int = 5,
+) -> str:
+    """多路模糊检索 GitHub，合并去重，兼顾「不要太水」和「不要难到写不进简历」。
+
+    会用同一组关键词构造多路查询：高 star 排序、最近更新排序、略放宽 star 区间、以及去掉「教程/awesome」等噪声词后的变体。
+    适合在用户只给模糊方向（如「Python 后端中间件」）时扩大召回；之后应配合 `evaluate_github_project_candidates` 筛选。
+
+    参数:
+        keywords: 用户意图关键词（中英文均可，建议含技术栈+场景）。
+        language: 可选，如 Python、Rust。
+        min_stars / max_stars: 默认过滤掉极低 star 玩具库与超巨型明星项目之间的区间，可按用户水平改。
+        per_variant: 每路子查询返回条数（最大 10，实际会截断）。
+
+    返回:
+        去重后的仓库列表，每条标注 [来源:…] 便于理解为何被召回。
+    """
+    per_variant = max(1, min(int(per_variant), 10))
+    lang = language.strip()
+    lo, hi = int(min_stars), int(max_stars)
+    if lo > hi:
+        lo, hi = hi, lo
+
+    def qbase(kw: str, stars_lo: int, stars_hi: int) -> str:
+        parts = [kw.strip(), f"stars:{stars_lo}..{stars_hi}", "archived:false"]
+        if lang:
+            parts.insert(1, f"language:{lang}")
+        return " ".join(parts)
+
+    plans: list[tuple[str, str, str]] = [
+        ("stars", "主词+热度排序", qbase(keywords, lo, hi)),
+        ("updated", "主词+最近更新", qbase(keywords, lo, hi)),
+        ("stars", "放宽star区间", qbase(keywords, max(15, lo // 2), min(50_000, hi * 2))),
+    ]
+    cleaned = _strip_noise_terms(keywords)
+    if cleaned != keywords.strip():
+        plans.append(("stars", "去噪声词后", qbase(cleaned, lo, hi)))
+
+    short = _short_core_keywords(keywords)
+    if short != keywords.strip() and short:
+        plans.append(("stars", "核心词缩短", qbase(short, lo, hi)))
+
+    seen: set[str] = set()
+    merged: list[tuple[dict[str, Any], str]] = []
+    errors: list[str] = []
+
+    for idx, (sort, label, q) in enumerate(plans):
+        if idx:
+            time.sleep(0.25)
+        items, err = _github_search_items(q, sort=sort, order="desc", per_page=per_variant)
+        if err:
+            errors.append(f"[{label}] {err}")
+            continue
+        for repo in items:
+            fn = repo.get("full_name") or ""
+            if not fn or fn in seen:
+                continue
+            seen.add(fn)
+            merged.append((repo, label))
+            if len(merged) >= 15:
+                break
+        if len(merged) >= 15:
+            break
+
+    if errors and not merged:
+        return "GitHub 模糊搜索均失败: " + "; ".join(errors[:3])
+
+    if not merged:
+        hint = f" 可尝试放宽区间（当前 stars:{lo}..{hi}）或换成英文技术关键词。"
+        return "多路搜索无去重后结果。" + hint + (
+            f" 部分请求错误: {'; '.join(errors[:2])}" if errors else ""
+        )
+
+    lines: list[str] = []
+    if errors:
+        lines.append("（部分子查询失败，已用其余结果合并）\n")
+    for i, (repo, label) in enumerate(merged, 1):
+        name = repo.get("full_name", "")
+        desc = _bmp_text((repo.get("description") or "").replace("\n", " "), 500)
+        stars = repo.get("stargazers_count", 0)
+        lang_o = repo.get("language") or "—"
+        url = repo.get("html_url", "")
+        topics = ", ".join(repo.get("topics") or [])[:120]
+        lines.append(
+            f"{i}. {name} ({lang_o}, stars:{stars}) [来源:{label}]\n   {desc}\n   {url}"
+            + (f"\n   topics: {topics}" if topics else "")
+        )
+    return "\n\n".join(lines)
+
+
+def evaluate_github_project_candidates(user_context: str, github_candidates_text: str) -> str:
+    """对一批 GitHub 仓库做「简历练手项目」适配度评估，并给出是否继续搜索的建议。
+
+    根据用户背景（年级、已会栈、目标岗位、可投入时间）判断每个仓库是过易、合适还是过难，
+    并给出 1～10 的难度与简历价值分。若整体不合适，必须在 next_search_queries 中给出新的搜索 query，
+    供你调用 `search_github_repositories` 或 `search_github_fuzzy_for_resume` 继续检索。
+
+    参数:
+        user_context: 用户水平与目标简述（越具体越好）。
+        github_candidates_text: 上游工具返回的仓库列表原文（含序号与 URL）。
+
+    返回:
+        结构化评估文本：逐条 verdict、理由、以及建议的下一轮 GitHub 搜索 query。
+    """
+    raw = (github_candidates_text or "").strip()
+    if len(raw) < 20 or "未找到" in raw or "无去重后结果" in raw or "失败" in raw[:80]:
+        return (
+            "当前没有可用的仓库候选文本。请先调用 search_github_fuzzy_for_resume 或 "
+            "search_github_repositories，再把完整工具输出粘贴到本工具。"
+        )
+
+    from resume_agent.config import get_llm
+
+    system = SystemMessage(
+        content=(
+            "你是资深工程师与校招/社招简历顾问。任务：判断 GitHub 仓库是否适合作为"
+            "「能写进简历、难度适中」的练手项目。\n"
+            "too_easy：主要是 awesome-list、纯 CRUD 脚手架、几行 demo、或无需理解即可照抄。\n"
+            "ok：中等规模，能在 1～4 周内做出可讲故事的产出，技术点可写 bullet。\n"
+            "too_hard：操作系统/编译器/大型分布式等需长期投入，或文档极差无从下手。\n"
+            "unclear：信息不足时保守标记。\n"
+            "若 ok 的仓库少于 1 个，或整体偏题，必须填写 next_search_queries（1～3 条），"
+            "query 要具体（技术栈+场景），可含 language:、stars:数字..数字、-topic:awesome 等 GitHub 语法。"
+        )
+    )
+    human = HumanMessage(
+        content=f"【用户背景】\n{user_context.strip()}\n\n【候选仓库】\n{raw}",
+    )
+    llm = get_llm().with_structured_output(GithubFitEvaluation)
+    try:
+        ev: GithubFitEvaluation = llm.invoke([system, human])
+    except Exception as e:  # noqa: BLE001
+        return f"LLM 评估失败: {e}"
+
+    parts: list[str] = [f"【小结】{ev.summary}", "", "【逐条】"]
+    for row in ev.rows:
+        parts.append(
+            f"- {row.repo_ref} → {row.verdict} | 难度{row.difficulty_1_10}/10 "
+            f"简历价值{row.resume_value_1_10}/10\n  {row.reason}"
+        )
+    if ev.next_search_queries:
+        parts.extend(["", "【建议下一轮 GitHub 搜索 query】"])
+        for nq in ev.next_search_queries:
+            parts.append(f"- {nq}")
+    else:
+        parts.append("\n（未生成新 query：若仍不满意可缩小/放大 stars 区间或换英文关键词再搜。）")
+    return "\n".join(parts)
 
 
 def web_search(query: str, max_results: int = 5) -> str:
