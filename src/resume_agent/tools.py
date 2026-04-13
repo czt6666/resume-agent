@@ -194,7 +194,9 @@ def evaluate_github_project_candidates(user_context: str, github_candidates_text
         )
 
     from resume_agent.config import get_llm
+    from resume_agent.debug_trace import trace_step
 
+    trace_step("工具 evaluate_github_project_candidates：LLM 评估候选仓库")
     system = SystemMessage(
         content=(
             "你是资深工程师与校招/社招简历顾问。任务：判断 GitHub 仓库是否适合作为"

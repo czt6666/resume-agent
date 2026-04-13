@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from pydantic import BaseModel, Field, model_validator
 
 from resume_agent.config import get_llm
+from resume_agent.debug_trace import trace_step
 from resume_agent.tools import (
     evaluate_github_project_candidates,
     search_github_fuzzy_for_resume,
@@ -125,6 +126,7 @@ _SYN = """你是汇总专员。把主管说明与子专员输出合并为一份�
 
 
 def _plan(payload: str) -> ResumeOrchestrationPlan:
+    trace_step("主管：生成路由计划（结构化输出）")
     llm = get_llm().with_structured_output(ResumeOrchestrationPlan)
     out = llm.invoke(
         [HumanMessage(content=f"{_SUP}\n\n--- 上下文 ---\n{payload}\n--- 结束 ---")],
@@ -135,6 +137,7 @@ def _plan(payload: str) -> ResumeOrchestrationPlan:
 
 
 def _run_sub(kind: str, payload: str, plan: ResumeOrchestrationPlan) -> tuple[str, str]:
+    trace_step(f"子专员运行开始：{kind}（{_LABELS[kind]}）")
     g = _sub_graph(kind)
     hint = (plan.hints or {}).get(kind, "").strip()
     task = f"""{payload}
@@ -164,6 +167,7 @@ def _parallel(plan: ResumeOrchestrationPlan, payload: str) -> dict[str, str]:
 
 
 def _merge(plan: ResumeOrchestrationPlan, sub: dict[str, str]) -> str:
+    trace_step("汇总：合并子专员输出并生成最终回复")
     order = ("project", "tech", "experience", "competitiveness")
     parts = [f"### {_LABELS[k]}\n{v.strip()}" for k in order if (v := sub.get(k, "")) and v.strip()]
     body = "\n\n".join(parts) if parts else "（子专员无有效输出。）"
@@ -182,8 +186,13 @@ def _merge(plan: ResumeOrchestrationPlan, sub: dict[str, str]) -> str:
 def run_resume_pipeline(full_user_payload: str) -> str:
     plan = _plan(full_user_payload)
     if plan.direct_response:
+        trace_step("主管：直接回复（未走子专员）", plan.rationale[:500] if plan.rationale else "")
         h = f"【主管】{plan.rationale}\n\n" if plan.rationale else ""
         return f"{h}{plan.direct_response.strip()}"
+    trace_step(
+        "主管：并行子专员",
+        "agents=" + ",".join(plan.agents),
+    )
     return _merge(plan, _parallel(plan, full_user_payload))
 
 

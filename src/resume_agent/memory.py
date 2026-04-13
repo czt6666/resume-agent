@@ -17,7 +17,6 @@ from langchain_core.messages import BaseMessage, messages_from_dict, messages_to
 
 from resume_agent.schemas import ParsedResume
 
-# 环境变量名（值应为目录路径）
 RESUME_AGENT_DATA_DIR = "RESUME_AGENT_DATA_DIR"
 LONG_TERM_FILENAME = "long_term.json"
 SHORT_TERM_FILENAME = "short_term.json"
@@ -25,15 +24,17 @@ SHORT_TERM_MAX_MESSAGES = 80
 
 
 def default_data_dir() -> Path:
-    return Path(
-        os.environ.get(RESUME_AGENT_DATA_DIR))
-    ).expanduser().resolve()
+    raw = os.environ.get(RESUME_AGENT_DATA_DIR, "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path.home() / ".resume_agent"
 
 
 def sanitize_user_id(user_id: str) -> str:
     if not isinstance(user_id, str):
         raise TypeError("user_id 必须是 str")
-    return user_id.strip()
+    s = user_id.strip()
+    return s if s else "default"
 
 
 def user_storage_dir(user_id: str) -> Path:

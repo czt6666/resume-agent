@@ -7,6 +7,7 @@ import json
 from langchain_core.messages import HumanMessage
 
 from resume_agent.config import get_llm
+from resume_agent.debug_trace import trace_step
 from resume_agent.schemas import ParsedResume
 
 _PARSE_INSTRUCTION = """你是简历解析器。根据用户给出的「简历全文」，抽取结构化信息，用中文填写各字段。
@@ -24,6 +25,7 @@ def parse_resume_with_llm(resume_plain_text: str) -> ParsedResume:
     if not text:
         raise ValueError("简历正文为空")
 
+    trace_step("简历解析：LLM 结构化抽取 ParsedResume")
     llm = get_llm()
     structured = llm.with_structured_output(ParsedResume)
     msg = HumanMessage(

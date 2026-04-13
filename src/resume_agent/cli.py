@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="简历文件路径：上传后先用 LLM 解析，再进入优化对话（.txt / .md / .pdf）",
     )
     p.add_argument(
+        "--debug",
+        action="store_true",
+        help="调试：步骤与每次 LLM 提示词/回复摘要输出到 stderr（等同环境变量 RESUME_AGENT_DEBUG=1）",
+    )
+    p.add_argument(
         "--user-id",
         default="default",
         metavar="ID",
@@ -64,6 +70,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def parse_cli(argv: list[str] | None = None) -> CliConfig:
     """解析 argv 并归一化为 CliConfig。"""
     ns = _build_arg_parser().parse_args(argv)
+    if ns.debug:
+        os.environ["RESUME_AGENT_DEBUG"] = "1"
     return CliConfig(
         user_id=sanitize_user_id(ns.user_id),
         resume_path=ns.resume_path,
