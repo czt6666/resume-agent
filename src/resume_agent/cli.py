@@ -49,11 +49,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--user-id",
         default="default",
         metavar="ID",
-        dest="user_id_raw",
+        dest="user_id",
         help="用户标识，用于短期对话记忆与长期简历档案目录（默认 default，可用环境变量 RESUME_AGENT_DATA_DIR 指定根目录）",
     )
     p.add_argument(
-        "message_raw",
+        "message",
         nargs="?",
         default=None,
         help='用户问题；省略时默认为「请帮我分析一下这份简历」。',
@@ -61,18 +61,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _normalize_user_question(message_raw: str | None) -> str:
-    m = (message_raw or "").strip()
-    return m if m else DEFAULT_USER_QUESTION
-
-
 def parse_cli(argv: list[str] | None = None) -> CliConfig:
     """解析 argv 并归一化为 CliConfig。"""
     ns = _build_arg_parser().parse_args(argv)
     return CliConfig(
-        user_id=sanitize_user_id(ns.user_id_raw),
+        user_id=sanitize_user_id(ns.user_id),
         resume_path=ns.resume_path,
-        user_question=_normalize_user_question(ns.message_raw),
+        user_question=(ns.message or "").strip() or DEFAULT_USER_QUESTION,
     )
 
 
@@ -89,13 +84,8 @@ def _invoke_agent_with_memory(user_id: str, user_message_content: str) -> str:
     return reply
 
 
-def _persist_resume_long_term(user_id: str, raw: str, parsed) -> None:
-    """长期记忆：每次成功解析简历后覆盖写入（含指纹，便于识别是否换过文件）。"""
-    save_long_term(user_id, LongTermRecord.from_parsed(raw, parsed))
-
-
 def _run_resume_and_agent(user_id: str, raw: str, parsed, user_question: str) -> None:
-    _persist_resume_long_term(user_id, raw, parsed)
+    save_long_term(user_id, LongTermRecord.from_parsed(raw, parsed))
     ctx = build_agent_context(raw, parsed)
     payload = f"{ctx}\n\n【用户问题】\n{user_question}"
     print(_invoke_agent_with_memory(user_id, payload))
