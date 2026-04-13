@@ -17,7 +17,6 @@ cp .env.example .env
 ```bash
 uv run resume-agent "帮我看看简历里项目描述怎么改"
 uv run resume-agent -r ./resume.md "我投后端实习，缺项目推荐"
-uv run resume-agent -r ./cv.pdf --parse-only
 ```
 
 ## 开发

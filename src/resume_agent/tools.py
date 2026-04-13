@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import time
 from typing import Any
 
@@ -70,8 +69,7 @@ def _format_github_items(items: list[dict[str, Any]], start_index: int = 1) -> s
         url = repo.get("html_url", "")
         topics = ", ".join(repo.get("topics") or [])[:120]
         lines.append(
-            f"{i}. {name} ({lang}, stars:{stars})\n   {desc}\n   {url}"
-            + (f"\n   topics: {topics}" if topics else "")
+            f"{i}. {name} ({lang}, stars:{stars})\n   {desc}\n   {url}\n   topics: {topics or '—'}"
         )
     return "\n\n".join(lines)
 
@@ -89,7 +87,7 @@ def search_github_repositories(
         query: 核心搜索词，勿重复写入 language/stars（会用参数拼接），如 \"web scraper api\"。
         max_results: 返回条数，默认 5，最大 10。
         language: 可选，如 Python、Go、TypeScript（写入 GitHub 的 language: 限定）。
-        min_stars / max_stars: 可选，控制体量，避免过小玩具库或过大工业怪物项目。
+        min_stars / max_stars: 可选，须同时传入，写入 GitHub stars:lo..hi。
 
     返回:
         仓库列表的简要说明（名称、URL、简介、star 数、主要语言）。
@@ -99,14 +97,7 @@ def search_github_repositories(
     if language.strip():
         q = f"{q} language:{language.strip()}"
     if min_stars is not None and max_stars is not None:
-        lo, hi = int(min_stars), int(max_stars)
-        if lo > hi:
-            lo, hi = hi, lo
-        q = f"{q} stars:{lo}..{hi}"
-    elif min_stars is not None:
-        q = f"{q} stars:>={int(min_stars)}"
-    elif max_stars is not None:
-        q = f"{q} stars:<={int(max_stars)}"
+        q = f"{q} stars:{int(min_stars)}..{int(max_stars)}"
     q = f"{q} archived:false"
 
     items, err = _github_search_items(q, sort="stars", order="desc", per_page=max_results)
@@ -117,19 +108,6 @@ def search_github_repositories(
     return _format_github_items(items)
 
 
-def _strip_noise_terms(text: str) -> str:
-    noise = r"(教程|入门|awesome|合集|列表|list|101|零基础)"
-    t = re.sub(noise, " ", text, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", t).strip()
-
-
-def _short_core_keywords(text: str, max_tokens: int = 4) -> str:
-    parts = [p for p in re.split(r"[\s,，、]+", text.strip()) if p]
-    if len(parts) <= max_tokens:
-        return " ".join(parts)
-    return " ".join(parts[:max_tokens])
-
-
 def search_github_fuzzy_for_resume(
     keywords: str,
     language: str = "",
@@ -137,79 +115,50 @@ def search_github_fuzzy_for_resume(
     max_stars: int = 12000,
     per_variant: int = 5,
 ) -> str:
-    """多路模糊检索 GitHub，合并去重，兼顾「不要太水」和「不要难到写不进简历」。
-
-    会用同一组关键词构造多路查询：高 star 排序、最近更新排序、略放宽 star 区间、以及去掉「教程/awesome」等噪声词后的变体。
-    适合在用户只给模糊方向（如「Python 后端中间件」）时扩大召回；之后应配合 `evaluate_github_project_candidates` 筛选。
+    """同一查询串做两次检索（按 star / 按最近更新），结果去重合并。配合 evaluate_github_project_candidates 筛选。
 
     参数:
-        keywords: 用户意图关键词（中英文均可，建议含技术栈+场景）。
-        language: 可选，如 Python、Rust。
-        min_stars / max_stars: 默认过滤掉极低 star 玩具库与超巨型明星项目之间的区间，可按用户水平改。
-        per_variant: 每路子查询返回条数（最大 10，实际会截断）。
+        keywords: 用户意图关键词（建议含技术栈+场景）。
+        language: 可选，如 Python。
+        min_stars / max_stars: star 区间。
+        per_variant: 每次请求条数（最大 10）。
 
     返回:
-        去重后的仓库列表，每条标注 [来源:…] 便于理解为何被召回。
+        去重后的仓库列表，[来源] 为 stars 或 updated。
     """
     per_variant = max(1, min(int(per_variant), 10))
     lang = language.strip()
     lo, hi = int(min_stars), int(max_stars)
-    if lo > hi:
-        lo, hi = hi, lo
 
-    def qbase(kw: str, stars_lo: int, stars_hi: int) -> str:
-        parts = [kw.strip(), f"stars:{stars_lo}..{stars_hi}", "archived:false"]
-        if lang:
-            parts.insert(1, f"language:{lang}")
-        return " ".join(parts)
-
-    plans: list[tuple[str, str, str]] = [
-        ("stars", "主词+热度排序", qbase(keywords, lo, hi)),
-        ("updated", "主词+最近更新", qbase(keywords, lo, hi)),
-        ("stars", "放宽star区间", qbase(keywords, max(15, lo // 2), min(50_000, hi * 2))),
-    ]
-    cleaned = _strip_noise_terms(keywords)
-    if cleaned != keywords.strip():
-        plans.append(("stars", "去噪声词后", qbase(cleaned, lo, hi)))
-
-    short = _short_core_keywords(keywords)
-    if short != keywords.strip() and short:
-        plans.append(("stars", "核心词缩短", qbase(short, lo, hi)))
+    parts = [keywords.strip(), f"stars:{lo}..{hi}", "archived:false"]
+    if lang:
+        parts.insert(1, f"language:{lang}")
+    q = " ".join(parts)
 
     seen: set[str] = set()
     merged: list[tuple[dict[str, Any], str]] = []
-    errors: list[str] = []
 
-    for idx, (sort, label, q) in enumerate(plans):
-        if idx:
+    for i, sort in enumerate(("stars", "updated")):
+        if i:
             time.sleep(0.25)
         items, err = _github_search_items(q, sort=sort, order="desc", per_page=per_variant)
-        if err:
-            errors.append(f"[{label}] {err}")
+        if err or not items:
             continue
         for repo in items:
             fn = repo.get("full_name") or ""
             if not fn or fn in seen:
                 continue
             seen.add(fn)
-            merged.append((repo, label))
+            merged.append((repo, sort))
             if len(merged) >= 15:
                 break
         if len(merged) >= 15:
             break
 
-    if errors and not merged:
-        return "GitHub 模糊搜索均失败: " + "; ".join(errors[:3])
-
     if not merged:
-        hint = f" 可尝试放宽区间（当前 stars:{lo}..{hi}）或换成英文技术关键词。"
-        return "多路搜索无去重后结果。" + hint + (
-            f" 部分请求错误: {'; '.join(errors[:2])}" if errors else ""
-        )
+        return "多路搜索无结果。可换英文关键词或调整 stars 区间。"
 
     lines: list[str] = []
-    if errors:
-        lines.append("（部分子查询失败，已用其余结果合并）\n")
     for i, (repo, label) in enumerate(merged, 1):
         name = repo.get("full_name", "")
         desc = _bmp_text((repo.get("description") or "").replace("\n", " "), 500)
@@ -218,8 +167,7 @@ def search_github_fuzzy_for_resume(
         url = repo.get("html_url", "")
         topics = ", ".join(repo.get("topics") or [])[:120]
         lines.append(
-            f"{i}. {name} ({lang_o}, stars:{stars}) [来源:{label}]\n   {desc}\n   {url}"
-            + (f"\n   topics: {topics}" if topics else "")
+            f"{i}. {name} ({lang_o}, stars:{stars}) [来源:{label}]\n   {desc}\n   {url}\n   topics: {topics or '—'}"
         )
     return "\n\n".join(lines)
 
@@ -239,10 +187,10 @@ def evaluate_github_project_candidates(user_context: str, github_candidates_text
         结构化评估文本：逐条 verdict、理由、以及建议的下一轮 GitHub 搜索 query。
     """
     raw = (github_candidates_text or "").strip()
-    if len(raw) < 20 or "未找到" in raw or "无去重后结果" in raw or "失败" in raw[:80]:
+    if not raw:
         return (
-            "当前没有可用的仓库候选文本。请先调用 search_github_fuzzy_for_resume 或 "
-            "search_github_repositories，再把完整工具输出粘贴到本工具。"
+            "没有候选仓库文本。请先调用 search_github_fuzzy_for_resume 或 "
+            "search_github_repositories，再把工具输出交给本工具。"
         )
 
     from resume_agent.config import get_llm
@@ -275,11 +223,7 @@ def evaluate_github_project_candidates(user_context: str, github_candidates_text
             f"简历价值{row.resume_value_1_10}/10\n  {row.reason}"
         )
     if ev.next_search_queries:
-        parts.extend(["", "【建议下一轮 GitHub 搜索 query】"])
-        for nq in ev.next_search_queries:
-            parts.append(f"- {nq}")
-    else:
-        parts.append("\n（未生成新 query：若仍不满意可缩小/放大 stars 区间或换英文关键词再搜。）")
+        parts.extend(["", "【建议下一轮 GitHub 搜索 query】", *[f"- {nq}" for nq in ev.next_search_queries]])
     return "\n".join(parts)
 
 
@@ -300,9 +244,7 @@ def web_search(query: str, max_results: int = 5) -> str:
     rows: list[str] = []
     try:
         with DDGS() as ddgs:
-            gen = ddgs.text(query, max_results=max_results)
-            if gen is None:
-                return "搜索无结果，请换关键词重试。"
+            gen = ddgs.text(query, max_results=max_results) or []
             for j, item in enumerate(gen, 1):
                 title = _bmp_text(item.get("title", ""), 200)
                 body = _bmp_text((item.get("body") or "").replace("\n", " "), 400)
@@ -312,5 +254,5 @@ def web_search(query: str, max_results: int = 5) -> str:
         return f"网页搜索失败: {e}"
 
     if not rows:
-        return "搜索无结果，请换关键词或去掉 site: 限制再试。"
+        return "搜索无结果。"
     return "\n\n".join(rows)

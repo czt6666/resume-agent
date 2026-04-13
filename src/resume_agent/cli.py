@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -19,7 +20,18 @@ from resume_agent.memory import (
     save_short_term_messages,
     sanitize_user_id,
 )
-from resume_agent.parser import build_agent_context, parse_resume_with_llm, parsed_resume_to_json
+from resume_agent.parser import build_agent_context, parse_resume_with_llm
+
+DEFAULT_USER_QUESTION = "请帮我分析一下这份简历"
+
+
+@dataclass(frozen=True)
+class CliConfig:
+    """归一化后的命令行参数（main 只依赖本结构，不读 argparse Namespace）。"""
+
+    user_id: str
+    resume_path: Path | None
+    user_question: str
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -30,44 +42,45 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="FILE",
+        dest="resume_path",
         help="简历文件路径：上传后先用 LLM 解析，再进入优化对话（.txt / .md / .pdf）",
     )
     p.add_argument(
         "--user-id",
         default="default",
         metavar="ID",
+        dest="user_id_raw",
         help="用户标识，用于短期对话记忆与长期简历档案目录（默认 default，可用环境变量 RESUME_AGENT_DATA_DIR 指定根目录）",
     )
     p.add_argument(
-        "--parse-only",
-        action="store_true",
-        help="仅调用 LLM 解析简历并输出 JSON，不运行优化 Agent",
-    )
-    p.add_argument(
-        "message",
+        "message_raw",
         nargs="?",
         default=None,
-        help="用户问题；与 --resume 连用时可省略（使用默认分析提示）。未指定 --resume 时必填。",
+        help='用户问题；省略时默认为「请帮我分析一下这份简历」。',
     )
     return p
 
 
-def _require_plain_message(message: str | None) -> str:
-    """无简历路径下必须由命令行提供问题文本。"""
-    if message is None or not str(message).strip():
-        raise ValueError("请通过位置参数传入用户问题，例如：resume-agent \"如何改项目描述\"")
-    return str(message).strip()
+def _normalize_user_question(message_raw: str | None) -> str:
+    m = (message_raw or "").strip()
+    return m if m else DEFAULT_USER_QUESTION
+
+
+def parse_cli(argv: list[str] | None = None) -> CliConfig:
+    """解析 argv 并归一化为 CliConfig。"""
+    ns = _build_arg_parser().parse_args(argv)
+    return CliConfig(
+        user_id=sanitize_user_id(ns.user_id_raw),
+        resume_path=ns.resume_path,
+        user_question=_normalize_user_question(ns.message_raw),
+    )
 
 
 def _invoke_agent_with_memory(user_id: str, user_message_content: str) -> str:
     """短期记忆：拼接历史为单条上下文后走主管编排流水线，并写回对话列表。"""
     prior = load_short_term_messages(user_id)
     history_block = format_prior_turns_for_supervisor(prior)
-    payload = (
-        f"{history_block}【当前轮用户输入】\n{user_message_content}"
-        if history_block
-        else user_message_content
-    )
+    payload = f"{history_block}【当前轮用户输入】\n{user_message_content}"
     reply = run_resume_orchestration(payload)
     out_messages = list(prior)
     out_messages.append(HumanMessage(content=user_message_content))
@@ -81,11 +94,6 @@ def _persist_resume_long_term(user_id: str, raw: str, parsed) -> None:
     save_long_term(user_id, LongTermRecord.from_parsed(raw, parsed))
 
 
-def _run_parse_only(user_id: str, raw: str, parsed) -> None:
-    print(parsed_resume_to_json(parsed))
-    _persist_resume_long_term(user_id, raw, parsed)
-
-
 def _run_resume_and_agent(user_id: str, raw: str, parsed, user_question: str) -> None:
     _persist_resume_long_term(user_id, raw, parsed)
     ctx = build_agent_context(raw, parsed)
@@ -96,23 +104,15 @@ def _run_resume_and_agent(user_id: str, raw: str, parsed, user_question: str) ->
 def _run_plain_agent(user_id: str, user_question: str) -> None:
     lt = load_long_term(user_id)
     prefix = long_term_prompt_block(lt) if lt else ""
-    payload = f"{prefix}【用户问题】\n{user_question}" if prefix else user_question
+    payload = f"{prefix}【用户问题】\n{user_question}"
     print(_invoke_agent_with_memory(user_id, payload))
 
 
 def main() -> None:
-    parser = _build_arg_parser()
-    args = parser.parse_args()
-
-    try:
-        user_id = sanitize_user_id(args.user_id)
-    except ValueError as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(2)
-
-    if args.resume is not None:
+    cfg = parse_cli()
+    if cfg.resume_path is not None:
         try:
-            raw = load_resume_text(args.resume)
+            raw = load_resume_text(cfg.resume_path)
         except ResumeLoadError as e:
             print(str(e), file=sys.stderr)
             sys.exit(2)
@@ -121,28 +121,9 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             print(f"LLM 解析失败: {e}", file=sys.stderr)
             sys.exit(3)
-
-        if args.parse_only:
-            _run_parse_only(user_id, raw, parsed)
-            return
-
-        default_q = "请全面分析这份简历的优缺点，并给出可执行的优化建议（含缺项补强思路）。"
-        m = (args.message or "").strip()
-        user_q = m if m else default_q
-        _run_resume_and_agent(user_id, raw, parsed, user_q)
+        _run_resume_and_agent(cfg.user_id, raw, parsed, cfg.user_question)
         return
-
-    if args.parse_only:
-        print("需要同时指定 --resume 文件才能使用 --parse-only", file=sys.stderr)
-        sys.exit(2)
-
-    try:
-        user_text = _require_plain_message(args.message)
-    except ValueError:
-        parser.print_help()
-        sys.exit(1)
-
-    _run_plain_agent(user_id, user_text)
+    _run_plain_agent(cfg.user_id, cfg.user_question)
 
 
 if __name__ == "__main__":

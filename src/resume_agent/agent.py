@@ -43,38 +43,28 @@ class ResumeOrchestrationPlan(BaseModel):
         if not self.agents and not self.direct_response:
             self.agents = ["project", "tech", "experience", "competitiveness"]
             extra = "（主管未指定路由，已默认并行启用四类专员。）"
-            self.rationale = f"{self.rationale}\n{extra}".strip() if self.rationale else extra
+            self.rationale = (f"{self.rationale}\n{extra}" if self.rationale else extra).strip()
         return self
 
 
 # —— 消息小工具（CLI / 多轮） —— #
 def format_prior_turns_for_supervisor(messages: list[BaseMessage]) -> str:
-    lines: list[str] = []
-    for m in messages:
-        role = getattr(m, "type", None) or ""
-        if role == "human":
-            lines.append(f"用户（前序）：{m.content}")
-        elif role == "ai":
-            lines.append(f"助手（前序）：{m.content}")
-    if not lines:
-        return ""
-    return "\n\n".join(lines) + "\n\n"
+    label = {"human": "用户（前序）", "ai": "助手（前序）"}
+    lines = [f"{label[r]}：{m.content}" for m in messages if (r := getattr(m, "type", "") or "") in label]
+    return ("\n\n".join(lines) + "\n\n") if lines else ""
 
 
 def _last_ai_text(messages: list[BaseMessage]) -> str:
     for m in reversed(messages):
-        if isinstance(m, AIMessage):
-            c = m.content
-            if isinstance(c, str):
-                return c
-            if isinstance(c, list):
-                parts = [
-                    str(b.get("text", ""))
-                    for b in c
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                return "\n".join(parts) if parts else str(c)
-            return str(c)
+        if not isinstance(m, AIMessage):
+            continue
+        c = m.content
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            parts = [str(b.get("text", "")) for b in c if isinstance(b, dict) and b.get("type") == "text"]
+            return "\n".join(parts) or str(c)
+        return str(c)
     return ""
 
 
@@ -225,7 +215,7 @@ def run_agent_turn(
     thread_messages: list[BaseMessage] | None = None,
 ) -> tuple[str, list[BaseMessage]]:
     prior = format_prior_turns_for_supervisor(list(thread_messages or []))
-    payload = f"{prior}【当前轮用户输入】\n{user_text}" if prior else user_text
+    payload = f"{prior}【当前轮用户输入】\n{user_text}"
     reply = run_resume_pipeline(payload)
     base = list(thread_messages or [])
     base.extend([HumanMessage(content=user_text), AIMessage(content=reply)])

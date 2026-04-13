@@ -49,7 +49,7 @@ def parse_then_optimize(
 
     parsed = parse_resume_with_llm(resume_plain_text)
     ctx = build_agent_context(resume_plain_text, parsed)
-    q = user_message or "请全面分析这份简历的优缺点，并给出可执行的优化建议（含缺项补强思路）。"
+    q = user_message or "请帮我分析一下这份简历"
     reply, _ = run_agent_turn(f"{ctx}\n\n【用户问题】\n{q}")
     return parsed, reply
 
@@ -57,10 +57,8 @@ def parse_then_optimize(
 def build_agent_context(resume_plain_text: str, parsed: ParsedResume, max_raw_chars: int = 14_000) -> str:
     """把解析结果 + 截断后的原文拼成发给优化 Agent 的上下文。"""
     raw = resume_plain_text.strip()
-    if len(raw) > max_raw_chars:
-        raw_excerpt = raw[:max_raw_chars] + "\n\n…（原文已截断，解析摘要已包含前文要点）"
-    else:
-        raw_excerpt = raw
+    tail = "\n\n…（原文已截断）" if len(raw) > max_raw_chars else ""
+    raw_excerpt = raw[:max_raw_chars] + tail
 
     structured = parsed.model_dump()
     return (

@@ -33,9 +33,4 @@ def load_resume_text(path: str | Path) -> str:
 
 def _read_pdf(path: Path) -> str:
     reader = PdfReader(str(path))
-    parts: list[str] = []
-    for page in reader.pages:
-        t = page.extract_text()
-        if t:
-            parts.append(t)
-    return "\n".join(parts)
+    return "\n".join(filter(None, (p.extract_text() for p in reader.pages)))

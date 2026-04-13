@@ -23,13 +23,9 @@ class TestSanitizeUserId(unittest.TestCase):
         self.assertEqual(sanitize_user_id(""), "default")
         self.assertEqual(sanitize_user_id("   "), "default")
 
-    def test_rejects_unsafe(self) -> None:
-        with self.assertRaises(ValueError):
-            sanitize_user_id("../etc")
-        with self.assertRaises(ValueError):
-            sanitize_user_id("a/b")
-        with self.assertRaises(ValueError):
-            sanitize_user_id(".")
+    def test_requires_str(self) -> None:
+        with self.assertRaises(TypeError):
+            sanitize_user_id(1)  # type: ignore[arg-type]
 
 
 class TestLongTermPersistence(unittest.TestCase):

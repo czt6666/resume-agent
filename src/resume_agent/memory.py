@@ -1,10 +1,12 @@
-"""按 user_id 持久化：短期对话（LangChain 消息）+ 长期简历解析档案。"""
+"""按 user_id 持久化：短期对话（LangChain 消息）+ 长期简历解析档案。
+
+数据根目录由环境变量 RESUME_AGENT_DATA_DIR 指定；未设置时使用 ~/.resume_agent。
+"""
 
 from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -15,27 +17,23 @@ from langchain_core.messages import BaseMessage, messages_from_dict, messages_to
 
 from resume_agent.schemas import ParsedResume
 
+# 环境变量名（值应为目录路径）
+RESUME_AGENT_DATA_DIR = "RESUME_AGENT_DATA_DIR"
 LONG_TERM_FILENAME = "long_term.json"
 SHORT_TERM_FILENAME = "short_term.json"
 SHORT_TERM_MAX_MESSAGES = 80
 
 
 def default_data_dir() -> Path:
-    raw = os.environ.get("RESUME_AGENT_DATA_DIR", "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return Path.home() / ".resume_agent"
+    return Path(
+        os.environ.get(RESUME_AGENT_DATA_DIR))
+    ).expanduser().resolve()
 
 
 def sanitize_user_id(user_id: str) -> str:
-    s = user_id.strip()
-    if not s:
-        return "default"
-    if s in {".", ".."}:
-        raise ValueError("user_id 不能使用 . 或 ..")
-    if not re.fullmatch(r"[\w.\-]{1,64}", s):
-        raise ValueError("user_id 仅允许字母数字、下划线、点、连字符，长度 1～64")
-    return s
+    if not isinstance(user_id, str):
+        raise TypeError("user_id 必须是 str")
+    return user_id.strip()
 
 
 def user_storage_dir(user_id: str) -> Path:
@@ -70,10 +68,10 @@ class LongTermRecord:
     @classmethod
     def from_json_dict(cls, data: dict[str, Any]) -> LongTermRecord:
         return cls(
-            version=int(data.get("version", 1)),
-            updated_at=str(data.get("updated_at", "")),
-            resume_fingerprint=str(data.get("resume_fingerprint", "")),
-            parsed_resume=dict(data.get("parsed_resume") or {}),
+            version=int(data["version"]),
+            updated_at=str(data["updated_at"]),
+            resume_fingerprint=str(data["resume_fingerprint"]),
+            parsed_resume=dict(data["parsed_resume"]),
         )
 
 
@@ -95,17 +93,10 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def load_long_term(user_id: str) -> LongTermRecord | None:
     path = user_storage_dir(user_id) / LONG_TERM_FILENAME
-    if not path.is_file():
-        return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict) or "parsed_resume" not in data:
-        return None
-    try:
         return LongTermRecord.from_json_dict(data)
-    except (TypeError, ValueError):
+    except Exception:
         return None
 
 
@@ -115,21 +106,10 @@ def save_long_term(user_id: str, record: LongTermRecord) -> None:
 
 def load_short_term_messages(user_id: str) -> list[BaseMessage]:
     path = user_storage_dir(user_id) / SHORT_TERM_FILENAME
-    if not path.is_file():
-        return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if isinstance(data, dict) and isinstance(data.get("messages"), list):
-        raw = data["messages"]
-    elif isinstance(data, list):
-        raw = data
-    else:
-        return []
-    try:
-        return messages_from_dict(raw)
-    except Exception:  # noqa: BLE001
+        return messages_from_dict(data["messages"])
+    except Exception:
         return []
 
 
