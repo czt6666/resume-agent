@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pypdf import PdfReader
+
 
 class ResumeLoadError(ValueError):
     pass
@@ -30,11 +32,6 @@ def load_resume_text(path: str | Path) -> str:
 
 
 def _read_pdf(path: Path) -> str:
-    try:
-        from pypdf import PdfReader
-    except ImportError as e:
-        raise ResumeLoadError("读取 PDF 需要安装依赖 pypdf：uv add pypdf") from e
-
     reader = PdfReader(str(path))
     parts: list[str] = []
     for page in reader.pages:

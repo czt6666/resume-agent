@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import httpx
+from duckduckgo_search import DDGS
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from resume_agent.schemas import GithubFitEvaluation
@@ -295,11 +296,6 @@ def web_search(query: str, max_results: int = 5) -> str:
     返回:
         搜索结果的标题与摘要文本（可能不完整，仅供写作参考）。
     """
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        return "未安装 duckduckgo-search，无法执行网页搜索。"
-
     max_results = max(1, min(int(max_results), 10))
     rows: list[str] = []
     try:

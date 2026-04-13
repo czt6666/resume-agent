@@ -28,8 +28,11 @@ uv run python -m unittest discover -s tests -t .
 
 ## 目录说明
 
-| 路径 | 说明 |
-|------|------|
-| `src/resume_agent/` | 可安装包：Agent、解析、加载器、工具 |
-| `tests/` | 单元测试 |
-| `pyproject.toml` / `uv.lock` | 依赖与锁文件 |
+
+| 路径                           | 说明                   |
+| ---------------------------- | -------------------- |
+| `src/resume_agent/`          | 可安装包：Agent、解析、加载器、工具 |
+| `tests/`                     | 单元测试                 |
+| `pyproject.toml` / `uv.lock` | 依赖与锁文件               |
+
+
