@@ -8,8 +8,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from resume_agent.agent import run_resume_orchestration
-from resume_agent.message_utils import format_prior_turns_for_supervisor
+from resume_agent.agent import format_prior_turns_for_supervisor, run_resume_orchestration
 from resume_agent.loaders import ResumeLoadError, load_resume_text
 from resume_agent.memory import (
     LongTermRecord,
@@ -48,26 +47,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "message",
         nargs="?",
         default=None,
-        help="用户问题；与 --resume 连用时写在解析之后。省略且未指定 --resume 时从 stdin 读入",
+        help="用户问题；与 --resume 连用时可省略（使用默认分析提示）。未指定 --resume 时必填。",
     )
     return p
 
 
-def _resolve_cli_message(args: argparse.Namespace) -> str | None:
-    """确定单轮用户输入文本（不含简历上下文）。"""
-    message = args.message
-    if message is None and args.resume is None and not sys.stdin.isatty():
-        message = sys.stdin.read().strip() or None
-    return message
-
-
-def _read_plain_user_text(message: str | None) -> str:
-    text = message
-    if text is None:
-        text = sys.stdin.read().strip()
-    if not text:
-        raise ValueError("缺少用户问题：请提供参数、管道输入或在终端输入内容。")
-    return text
+def _require_plain_message(message: str | None) -> str:
+    """无简历路径下必须由命令行提供问题文本。"""
+    if message is None or not str(message).strip():
+        raise ValueError("请通过位置参数传入用户问题，例如：resume-agent \"如何改项目描述\"")
+    return str(message).strip()
 
 
 def _invoke_agent_with_memory(user_id: str, user_message_content: str) -> str:
@@ -121,8 +110,6 @@ def main() -> None:
         print(str(e), file=sys.stderr)
         sys.exit(2)
 
-    message = _resolve_cli_message(args)
-
     if args.resume is not None:
         try:
             raw = load_resume_text(args.resume)
@@ -140,7 +127,8 @@ def main() -> None:
             return
 
         default_q = "请全面分析这份简历的优缺点，并给出可执行的优化建议（含缺项补强思路）。"
-        user_q = message or default_q
+        m = (args.message or "").strip()
+        user_q = m if m else default_q
         _run_resume_and_agent(user_id, raw, parsed, user_q)
         return
 
@@ -149,7 +137,7 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        user_text = _read_plain_user_text(message)
+        user_text = _require_plain_message(args.message)
     except ValueError:
         parser.print_help()
         sys.exit(1)

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from resume_agent.user_profile_store import (
+from resume_agent.memory import (
     LongTermRecord,
     load_long_term,
     save_long_term,
@@ -37,7 +37,7 @@ class TestLongTermPersistence(unittest.TestCase):
         root = Path(__file__).resolve().parent / "_mem_test_root"
         root.mkdir(exist_ok=True)
         try:
-            with patch("resume_agent.user_profile_store.default_data_dir", return_value=root):
+            with patch("resume_agent.memory.default_data_dir", return_value=root):
                 uid = "testuser"
                 raw = "张三\n求职：后端开发"
                 parsed = ParsedResume(

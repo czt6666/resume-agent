@@ -1,6 +1,6 @@
 # resume-agent
 
-基于 LangChain 1.x（`create_agent`）的简历解析与优化助手：支持上传 `.txt` / `.md` / `.pdf`，先用 LLM 结构化解析，再结合工具（GitHub、网页搜索）给出可执行建议。
+基于 LangChain 1.x（`create_agent`）的简历解析与优化助手：支持上传 `.txt` / `.md` / `.pdf`，先 LLM 解析；优化阶段由**主管路由 + 多子 Agent 并行 + 汇总**完成，工具含 GitHub 与网页搜索。
 
 ## 环境
 
@@ -29,10 +29,12 @@ uv run python -m unittest discover -s tests -t .
 ## 目录说明
 
 
-| 路径                           | 说明                   |
-| ---------------------------- | -------------------- |
-| `src/resume_agent/`          | 可安装包：Agent、解析、加载器、工具 |
-| `tests/`                     | 单元测试                 |
-| `pyproject.toml` / `uv.lock` | 依赖与锁文件               |
+| 路径 | 说明 |
+|------|------|
+| `src/resume_agent/agent.py` | 主管与子 Agent 编排（单文件） |
+| `src/resume_agent/tools.py` / `parser.py` / `memory.py` / `cli.py` | 工具、解析、持久化、命令行 |
+| `src/resume_agent/schemas.py` | 简历解析与 GitHub 评估的 Pydantic 模型 |
+| `tests/` | 单元测试 |
+| `pyproject.toml` / `uv.lock` | 依赖与锁文件 |
 
 
